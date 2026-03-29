@@ -204,6 +204,11 @@ Use this first to validate Feishu delivery and chat behavior.
 
 Runs real Codex work through `codex exec`.
 
+For current CLI builds such as `codex-cli 0.117.0`, prefer
+`--dangerously-bypass-approvals-and-sandbox` when you need fully unsandboxed
+execution. `codex exec` may reject top-level `--ask-for-approval` and
+`--sandbox` flags even if `codex --help` lists them.
+
 ### `EXECUTOR_TYPE=shell`
 
 Runs a custom command and passes job context through environment variables.
