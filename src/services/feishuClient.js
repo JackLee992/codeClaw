@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { logger } from "../logger.js";
 import * as Lark from "@larksuiteoapi/node-sdk";
 
@@ -123,6 +124,39 @@ export class FeishuClient {
       target: messageContext.chatId || messageContext.openId,
       responseBody
     });
+  }
+
+  async downloadMessageResource(messageId, fileKey, targetPath, resourceType = "file") {
+    if (!messageId || !fileKey) {
+      throw new Error("messageId and fileKey are required to download Feishu resource");
+    }
+
+    const token = await this.getTenantAccessToken();
+    const response = await fetch(
+      `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(fileKey)}?type=${encodeURIComponent(resourceType)}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Feishu resource download failed: ${response.status} ${errorBody}`);
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    await fs.writeFile(targetPath, buffer);
+    logger.info("Feishu resource downloaded.", {
+      messageId,
+      fileKey,
+      resourceType,
+      targetPath,
+      bytes: buffer.byteLength
+    });
+    return targetPath;
   }
 
   buildAppBody(messageContext, payload) {

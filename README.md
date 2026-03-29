@@ -6,6 +6,7 @@
 - answer usage questions
 - show online machines
 - look up job status
+- transcribe Feishu voice messages locally before routing them
 - dispatch real Codex work to a local or remote machine
 
 It also borrows a few interaction details that make OpenClaw feel good in chat:
@@ -65,6 +66,7 @@ codeClaw/
 - A Feishu self-built app with bot capability enabled
 - `Codex CLI` available in `PATH` if you want real execution
 - Optional: Redis for persistent state
+- Optional for voice support: `ffmpeg`, Python, `torch`, `transformers`, and a local Whisper model snapshot
 
 ## Feishu App Setup
 
@@ -124,6 +126,9 @@ ALLOWED_REPO_ROOTS=C:/work
 EXECUTOR_TYPE=codex-cli
 CODEX_COMMAND=codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox
 EVOLUTION_ENABLED=true
+AUDIO_TRANSCRIPTION_ENABLED=true
+AUDIO_TRANSCRIPTION_PYTHON=python
+AUDIO_WHISPER_MODEL_PATH=
 ```
 
 ## Chat Experience
@@ -148,6 +153,34 @@ Behavior:
 - machine and status queries are routed to the relevant system actions
 - execution requests become real Codex jobs
 - follow-up turns such as “重写一版”, “再短一点”, or “按刚才那个来” try to continue the current session instead of starting cold
+
+## Voice Messages
+
+`codeClaw` can handle Feishu voice messages by turning them into text locally first, then routing the transcript through the normal chat / task pipeline.
+
+Requirements:
+
+- `ffmpeg` in `PATH`
+- a working Python runtime
+- local `torch` + `transformers`
+- a local Whisper model path
+
+Relevant env vars:
+
+```text
+AUDIO_TRANSCRIPTION_ENABLED=true
+AUDIO_TRANSCRIPTION_PYTHON=python
+AUDIO_WHISPER_MODEL_PATH=C:/Users/you/.cache/huggingface/hub/models--openai--whisper-large-v3-turbo/snapshots/<snapshot>
+```
+
+Flow:
+
+- download Feishu audio via the message resource API
+- normalize it to mono `16k wav`
+- run `scripts/transcribe_audio.py`
+- feed the transcript back into the same intent and chat logic
+
+If local transcription fails, the bot sends a clear fallback reply instead of silently doing nothing.
 
 ## Process Feedback
 

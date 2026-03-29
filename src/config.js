@@ -45,6 +45,21 @@ export const config = {
   codexCommand: process.env.CODEX_COMMAND || "codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox",
   codexModel: process.env.CODEX_MODEL || "",
   codexExtraArgs: process.env.CODEX_EXTRA_ARGS || "",
+  audio: {
+    transcriptionEnabled: (process.env.AUDIO_TRANSCRIPTION_ENABLED || "true").toLowerCase() === "true",
+    pythonCommand: process.env.AUDIO_TRANSCRIPTION_PYTHON || "python",
+    whisperModelPath:
+      process.env.AUDIO_WHISPER_MODEL_PATH ||
+      path.join(
+        os.homedir(),
+        ".cache",
+        "huggingface",
+        "hub",
+        "models--openai--whisper-large-v3-turbo",
+        "snapshots",
+        "41f01f3fe87f28c78e2fbf8b568835947dd65ed9"
+      )
+  },
   evolution: {
     enabled: (process.env.EVOLUTION_ENABLED || "true").toLowerCase() === "true",
     dataDir: process.env.EVOLUTION_DATA_DIR || path.join(process.cwd(), "logs", "evolution"),

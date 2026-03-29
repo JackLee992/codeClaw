@@ -3,7 +3,7 @@ import { formatAgents, formatHelp, formatJobsOverview, formatStatus } from "./me
 import { buildAgentsCard, buildJobCard } from "./cardRenderer.js";
 
 export class FeishuLongConnectionService {
-  constructor({ config, client, dispatch, intentInterpreter, chatResponder, sessionStore, evolution, logger }) {
+  constructor({ config, client, dispatch, intentInterpreter, chatResponder, sessionStore, evolution, audioTranscription, logger }) {
     this.config = config;
     this.client = client;
     this.dispatch = dispatch;
@@ -11,6 +11,7 @@ export class FeishuLongConnectionService {
     this.chatResponder = chatResponder;
     this.sessionStore = sessionStore;
     this.evolution = evolution;
+    this.audioTranscription = audioTranscription;
     this.logger = logger;
     this.wsClient = null;
   }
@@ -138,10 +139,12 @@ export class FeishuLongConnectionService {
     }
 
     const messageId = event.message?.message_id || "";
-    const text = extractMessageText(event.message?.content);
+    const messageType = String(event.message?.message_type || "");
+    const parsedMessage = extractMessagePayload(event.message?.content);
+    let text = parsedMessage.text;
     this.logger.info("Feishu message parsed.", {
       text,
-      messageType: event.message?.message_type || "",
+      messageType,
       chatId: event.message?.chat_id || ""
     });
 
@@ -170,6 +173,51 @@ export class FeishuLongConnectionService {
     }
 
     try {
+      if (messageType === "audio") {
+        try {
+          if (!this.audioTranscription?.isEnabled()) {
+            throw new Error("audio transcription is disabled");
+          }
+
+          const transcription = await this.audioTranscription.transcribeFeishuAudio({
+            messageId,
+            fileKey: parsedMessage.fileKey,
+            duration: parsedMessage.duration,
+            language: guessAudioLanguage(session)
+          });
+          text = transcription.text;
+          this.logger.info("Feishu audio message transcribed.", {
+            messageId,
+            textPreview: text.slice(0, 120)
+          });
+        } catch (error) {
+          const replyText = formatAudioTranscriptionFailedReply(parsedMessage, error);
+          await this.sessionStore.rememberChat(sessionId, {
+            userText: "[audio message]",
+            assistantText: replyText,
+            kind: "audio"
+          });
+          await this.evolution?.recordIncident({
+            type: "audio_transcription_failed",
+            summary: "收到语音消息，但本地语音转写失败。",
+            userText: "[audio message]",
+            sessionId,
+            meta: {
+              messageType,
+              duration: parsedMessage.duration || "",
+              fileKey: parsedMessage.fileKey || "",
+              error: error instanceof Error ? error.message : String(error)
+            }
+          });
+          await this.client.replyText(messageContext, replyText);
+          this.logger.warn("Failed to transcribe Feishu audio message.", {
+            messageContext,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return;
+        }
+      }
+
       const command = await this.intentInterpreter.interpret(text, session);
       if (command.type === "ignore") {
         return;
@@ -299,15 +347,48 @@ function isDissatisfactionMessage(text) {
   );
 }
 
-function extractMessageText(content) {
+function extractMessagePayload(content) {
   if (!content) {
-    return "";
+    return {
+      text: "",
+      fileKey: "",
+      duration: ""
+    };
   }
 
   try {
     const parsed = JSON.parse(content);
-    return parsed.text || "";
+    return {
+      text: String(parsed.text || "").trim(),
+      fileKey: String(parsed.file_key || parsed.fileKey || "").trim(),
+      duration: String(parsed.duration || "").trim()
+    };
   } catch {
-    return "";
+    return {
+      text: "",
+      fileKey: "",
+      duration: ""
+    };
   }
+}
+
+function formatAudioTranscriptionFailedReply(parsedMessage, error) {
+  const durationLine = parsedMessage.duration ? `语音时长：${parsedMessage.duration}` : "";
+  const reasonLine = error ? `原因：${error instanceof Error ? error.message : String(error)}` : "";
+  return [
+    "我收到这条语音了，也尝试用本地转写继续处理，但这次转写没有成功。",
+    durationLine,
+    reasonLine,
+    "你可以再发一次语音，或者先发文字，我会继续接着当前会话处理。"
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function guessAudioLanguage(session) {
+  const historyText = JSON.stringify(session?.recentMessages || []).toLowerCase();
+  if (/[a-z]{3,}/i.test(historyText) && !/[\u4e00-\u9fff]/.test(historyText)) {
+    return "en";
+  }
+  return "zh";
 }

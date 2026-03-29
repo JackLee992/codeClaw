@@ -19,6 +19,7 @@ import { ChatResponder } from "./services/chatResponder.js";
 import { MemorySessionStore } from "./store/memorySessionStore.js";
 import { EvolutionService } from "./services/evolutionService.js";
 import { EvolutionOverridesStore } from "./services/evolutionOverridesStore.js";
+import { AudioTranscriptionService } from "./services/audioTranscriptionService.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -240,6 +241,11 @@ async function createRuntime() {
     queue
   });
   const accessControl = new AccessControl(config);
+  const audioTranscription = new AudioTranscriptionService({
+    config,
+    client,
+    logger
+  });
   const dispatch = new DispatchService({
     config,
     localJobs,
@@ -268,6 +274,7 @@ async function createRuntime() {
     chatResponder,
     sessionStore,
     evolution,
+    audioTranscription,
     logger
   });
   const heartbeat = new AgentHeartbeat({
