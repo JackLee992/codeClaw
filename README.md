@@ -186,6 +186,20 @@ transcripts do not come back garbled.
 
 If local transcription fails, the bot sends a clear fallback reply instead of silently doing nothing.
 
+## Runtime Notes
+
+The current bridge includes several runtime-oriented optimizations for Feishu chat:
+
+- a persistent Whisper worker for faster repeated voice transcription
+- heuristic intent short-circuiting for obvious local-computer actions
+- fast-path desktop actions for common tasks such as wallpaper restore, show desktop, and opening Chrome
+- persistent `codex exec resume` session reuse for repeated tasks in the same chat
+- queue replacement for stale queued tasks in the same conversation
+
+These optimizations improve responsiveness, but desktop automation is still
+experimental. The current architecture, tradeoffs, and known limitations are
+documented in `references/runtime-notes.md`.
+
 ## Process Feedback
 
 For execution-style messages, `codeClaw` does more than send a final result:

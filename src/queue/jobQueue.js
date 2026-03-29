@@ -11,11 +11,28 @@ export class JobQueue {
     this.evolution = evolution;
     this.items = [];
     this.running = false;
+    this.enqueueChain = Promise.resolve();
   }
 
   enqueue(job) {
+    this.enqueueChain = this.enqueueChain
+      .then(() => this.enqueueInternal(job))
+      .catch((error) => {
+        logger.error("Failed to enqueue job.", {
+          jobId: job.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+  }
+
+  async enqueueInternal(job) {
+    const superseded = await this.supersedeQueuedJobs(job);
     this.items.push(job.id);
-    logger.info("Job queued.", { jobId: job.id, repoPath: job.repoPath });
+    logger.info("Job queued.", {
+      jobId: job.id,
+      repoPath: job.repoPath,
+      supersededJobIds: superseded
+    });
     void this.pump();
   }
 
@@ -108,6 +125,51 @@ export class JobQueue {
     }
   }
 
+  async supersedeQueuedJobs(job) {
+    const sessionKey = getJobSessionKey(job);
+    if (!sessionKey) {
+      return [];
+    }
+
+    const candidates = await this.store.list(200);
+    const superseded = candidates.filter((candidate) => {
+      if (!candidate || candidate.id === job.id) {
+        return false;
+      }
+      if (candidate.status !== "queued") {
+        return false;
+      }
+      return getJobSessionKey(candidate) === sessionKey;
+    });
+
+    if (!superseded.length) {
+      return [];
+    }
+
+    const supersededIds = new Set(superseded.map((candidate) => candidate.id));
+    this.items = this.items.filter((id) => !supersededIds.has(id));
+
+    await Promise.all(
+      superseded.map((candidate) =>
+        this.store.update(candidate.id, {
+          status: "superseded",
+          completedAt: new Date().toISOString(),
+          result: {
+            summary: `已被同一会话中的较新任务替代：${job.id}`
+          }
+        })
+      )
+    );
+
+    logger.info("Superseded queued jobs for same session.", {
+      sessionKey,
+      jobId: job.id,
+      supersededJobIds: [...supersededIds]
+    });
+
+    return [...supersededIds];
+  }
+
   async safeReply(job, payload) {
     try {
       await this.client.replyMessage(job.messageContext, payload);
@@ -128,6 +190,20 @@ export class JobQueue {
       });
     }
   }
+}
+
+function getJobSessionKey(job) {
+  const chatId = String(job?.messageContext?.chatId || "").trim();
+  if (chatId) {
+    return `chat:${chatId}`;
+  }
+
+  const openId = String(job?.messageContext?.openId || "").trim();
+  if (openId) {
+    return `open:${openId}`;
+  }
+
+  return "";
 }
 
 function createProgressReporter({ job, client }) {

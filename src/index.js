@@ -205,7 +205,9 @@ async function createRuntime() {
   const { jobStore, agentStore, kind } = await createStores(config);
   const client = new FeishuClient(config.feishu);
   const agentClient = new AgentClient(config);
-  const executor = createExecutor(config);
+  const executor = createExecutor(config, {
+    logger
+  });
   const sessionStore = new MemorySessionStore();
   const evolutionOverrides = new EvolutionOverridesStore({
     config,
@@ -246,6 +248,13 @@ async function createRuntime() {
     client,
     logger
   });
+  if (audioTranscription.isEnabled()) {
+    void audioTranscription.warmUp().catch((error) => {
+      logger.warn("Audio transcription worker warmup failed.", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+  }
   const dispatch = new DispatchService({
     config,
     localJobs,

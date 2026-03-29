@@ -11,7 +11,8 @@ export function formatHelp() {
 
 export function formatQueued(job) {
   return [
-    "我收到你的任务了，先开始处理。",
+    "我收到你的任务了，已经加入队列。",
+    "前面如果有同一会话里还没开始的旧任务，我会优先保留你最新这一条。",
     job.metadata?.agentId ? `执行机器：${job.metadata.agentId}` : "",
     `任务编号：${job.id}`,
     `工作目录：${job.repoPath}`

@@ -133,6 +133,11 @@ function heuristicIntent(text, fallback, session = {}, overrides = null) {
     return { type: "chat" };
   }
 
+  const recentRunIntent = detectRecentRunIntent(normalized, session);
+  if (recentRunIntent) {
+    return recentRunIntent;
+  }
+
   if (/(几个设备在线|几台设备在线|几个机器在线|几台机器在线|多少设备在线|多少机器在线|多少节点在线|当前在线设备|当前在线机器|当前在线节点|在线的设备|在线的机器|在线的节点)/.test(normalized)) {
     return { type: "agents" };
   }
@@ -161,7 +166,7 @@ function heuristicIntent(text, fallback, session = {}, overrides = null) {
     return { type: "chat" };
   }
 
-  if (/(天气|天氣|温度|氣溫|下雨|晴天|阴天|颱風|台风)/.test(normalized)) {
+  if (/(天气|天氣|温度|氣溫|下雨|晴天|阴天|颱風|台风)/.test(normalized) && !isStrongExecutionRequest(normalized)) {
     return { type: "chat" };
   }
 
@@ -169,13 +174,27 @@ function heuristicIntent(text, fallback, session = {}, overrides = null) {
     if (session.lastIntent === "chat") {
       return { type: "chat" };
     }
-    if (session.lastIntent === "run" && /(继续|接着|按刚才|照刚才|沿用|用刚才|改成|改一下|补充|优化|重写|重做|再来一版)/.test(normalized)) {
+    if (session.lastIntent === "run" && isRunFollowUpText(normalized)) {
       return {
         type: "run",
-        task: mergeFollowUpTask(normalized, session)
+        task: mergeFollowUpTask(normalized, session),
+        options: {
+          ...(fallback.options || {})
+        }
       };
     }
     return { type: "chat" };
+  }
+
+  if (isStrongExecutionRequest(normalized)) {
+    return {
+      ...fallback,
+      type: "run",
+      task: String(fallback.task || normalized).trim(),
+      options: {
+        ...(fallback.options || {})
+      }
+    };
   }
 
   if (isLikelyGeneralCreationRequest(normalized) && !isLikelyExecutionRequest(normalized)) {
@@ -194,7 +213,7 @@ function isLikelyGeneralQuestion(text) {
 }
 
 function isLikelyExecutionRequest(text) {
-  return /(本地|电脑|電腦|机器|機器|节点|節點|agent=|repo=|model=|仓库|倉庫|项目|項目|代码|代碼|代码库|代碼庫|git|commit|pr\b|pull request|分支|branch|目录|目錄|文件|檔案|日志|日誌|终端|終端|shell|命令行|command|运行脚本|跑脚本|启动服务|啟動服務|查看改动|查看改動|最近改动|最近改動|diff|测试|測試|单测|單測|构建|構建|编译|編譯|修 bug|修复 bug|修復 bug|报错|報錯|排查|状态|狀態|任务状态|任務狀態)/i.test(
+  return /(本地|电脑|電腦|机器|機器|节点|節點|agent=|repo=|model=|仓库|倉庫|项目|項目|代码|代碼|代码库|代碼庫|git|commit|pr\b|pull request|分支|branch|目录|目錄|文件|檔案|日志|日誌|终端|終端|shell|命令行|command|运行脚本|跑脚本|启动服务|啟動服務|查看改动|查看改動|最近改动|最近改動|diff|测试|測試|单测|單測|构建|構建|编译|編譯|修 bug|修复 bug|修復 bug|报错|報錯|排查|状态|狀態|任务状态|任務狀態|浏览器|瀏覽器|chrome|edge|firefox|壁纸|壁紙|墙纸|牆紙|桌面|截图|截圖|截屏|屏幕|螢幕|窗口|視窗|网页|網頁|网站|網站|资源管理器|檔案總管|powershell|cmd|设置|設置|原图|原圖|原文件)/i.test(
     text
   );
 }
@@ -207,10 +226,57 @@ function isLikelyGeneralCreationRequest(text) {
 
 function isFollowUpTurn(text, learnedFollowUps = []) {
   return (
-    /^(继续|接着|然后|那就|按刚才|照刚才|沿用刚才|还是刚才|再来|再写|重写|重新写|改一下|改一版|换一版|再短一点|短一点|口语一点|像人话一点|就按这个|按这个来|就这个|这版不行|上一版不行|你自己重写)/.test(
+    /^(继续|接着|然后|那就|按刚才|照刚才|沿用刚才|还是刚才|再来|再写|重写|重新写|改一下|改一版|换一版|再短一点|短一点|口语一点|像人话一点|就按这个|按这个来|就这个|这版不行|上一版不行|你自己重写|换回|换成|恢复|发给我|直接发|发到聊天|不要卡片|别发卡片|不要截图|就发原图)/.test(
       text
     ) || matchesLearnedPhrase(text, learnedFollowUps)
   );
+}
+
+function detectRecentRunIntent(text, session = {}) {
+  const lastJobId = String(session.lastJobId || "").trim();
+  const lastIntent = String(session.lastIntent || "").trim();
+
+  if (lastJobId && /(执行.*慢|怎么.*慢|为什么.*慢|还没好|怎么还没|什么时候好|进展|卡住|还在跑|还在执行|做到哪|到哪一步|完成了吗|好了没|为什么还没|为什么这么久)/.test(text)) {
+    return {
+      type: "status",
+      jobId: lastJobId
+    };
+  }
+
+  if (lastIntent === "run" && isRunFollowUpText(text)) {
+    return {
+      type: "run",
+      task: mergeFollowUpTask(text, session)
+    };
+  }
+
+  return null;
+}
+
+function isRunFollowUpText(text) {
+  return /(继续|接着|按刚才|照刚才|沿用|用刚才|改成|改一下|补充|优化|重写|重做|再来一版|换回|换成|恢复|恢复成|发给我|发到聊天|直接发|直接回|不要卡片|别发卡片|不要截图|别截图|原图|原文件|壁纸|墙纸|桌面|浏览器|chrome|edge)/i.test(
+    text
+  );
+}
+
+function isStrongExecutionRequest(text) {
+  if (!isLikelyExecutionRequest(text)) {
+    return false;
+  }
+
+  if (/agent=|repo=|model=/.test(text)) {
+    return true;
+  }
+
+  if (/(打开|开一下|启动|关闭|关掉|停止|查看|看看|检查|查一下|搜一下|搜一搜|搜索|截图|截屏|发给我|发到聊天|找出来|找回|换成|换回|恢复|设置|修改|安装|卸载|运行|执行|处理|修一下|修复|排查|帮我打开|帮我看|帮我查|帮我处理|继续处理|继续刚才)/.test(text)) {
+    return true;
+  }
+
+  if (/(浏览器|chrome|edge|firefox|壁纸|墙纸|桌面|截图|截屏|原图|原文件|窗口|网页|网站|资源管理器|powershell|cmd|终端|日志|文件|服务|进程)/i.test(text)) {
+    return true;
+  }
+
+  return false;
 }
 
 function matchesLearnedPhrase(text, phrases = []) {
