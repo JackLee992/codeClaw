@@ -1,19 +1,22 @@
-import { formatAgents, formatHelp, formatStatus } from "./messageFormatter.js";
+import { formatAgents, formatHelp, formatJobsOverview, formatStatus } from "./messageFormatter.js";
 
 export class IngestService {
-  constructor({ config, store, dispatch, intentInterpreter, chatResponder }) {
+  constructor({ config, store, dispatch, intentInterpreter, chatResponder, sessionStore }) {
     this.config = config;
     this.store = store;
     this.dispatch = dispatch;
     this.intentInterpreter = intentInterpreter;
     this.chatResponder = chatResponder;
+    this.sessionStore = sessionStore;
   }
 
   async handle(req, res) {
     this.verify(req);
 
     const text = String(req.body?.text || "").trim();
-    const command = await this.intentInterpreter.interpret(text);
+    const sessionId = req.body?.chatId || req.body?.openId || req.body?.userId || "default";
+    const session = await this.sessionStore.get(sessionId);
+    const command = await this.intentInterpreter.interpret(text, session);
     if (command.type === "ignore") {
       return res.status(400).json({
         code: 400,
@@ -22,6 +25,7 @@ export class IngestService {
     }
 
     if (command.type === "help") {
+      await this.sessionStore.update(sessionId, { lastIntent: "help" });
       return res.json({
         code: 0,
         message: formatHelp()
@@ -29,6 +33,7 @@ export class IngestService {
     }
 
     if (command.type === "agents") {
+      await this.sessionStore.update(sessionId, { lastIntent: "agents" });
       const agents = await this.dispatch.listAgents();
       return res.json({
         code: 0,
@@ -38,6 +43,10 @@ export class IngestService {
     }
 
     if (command.type === "status") {
+      await this.sessionStore.update(sessionId, {
+        lastIntent: "status",
+        lastJobId: command.jobId || session.lastJobId || ""
+      });
       const job = command.jobId ? await this.dispatch.lookupStatus(command.jobId) : null;
       return res.json({
         code: 0,
@@ -46,10 +55,26 @@ export class IngestService {
       });
     }
 
-    if (command.type === "chat") {
+    if (command.type === "jobs") {
+      await this.sessionStore.update(sessionId, { lastIntent: "jobs" });
+      const jobs = await this.dispatch.listJobs(10);
       return res.json({
         code: 0,
-        message: command.replyText || (await this.chatResponder.reply(text))
+        jobs,
+        message: formatJobsOverview(jobs, this.config.agentId)
+      });
+    }
+
+    if (command.type === "chat") {
+      await this.sessionStore.update(sessionId, { lastIntent: "chat" });
+      const message = command.replyText || (await this.chatResponder.reply(text, session));
+      await this.sessionStore.rememberChat(sessionId, {
+        userText: text,
+        assistantText: message
+      });
+      return res.json({
+        code: 0,
+        message
       });
     }
 
@@ -78,6 +103,14 @@ export class IngestService {
         userId: req.body?.userId || ""
       },
       userId: req.body?.userId || ""
+    });
+    await this.sessionStore.rememberRun(sessionId, {
+      agentId: job?.metadata?.agentId || command.options.agent || this.config.agentId,
+      repo: command.options.repo || session.lastRepo || "",
+      model: command.options.model || session.lastModel || "",
+      task: command.task,
+      jobId: job?.id || "",
+      assistantText: message || ""
     });
     return res.json({
       code: 0,

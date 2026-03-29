@@ -1,4 +1,5 @@
 import os from "node:os";
+import path from "node:path";
 import dotenv from "dotenv";
 
 dotenv.config({ override: true });
@@ -43,7 +44,14 @@ export const config = {
   executorType: process.env.EXECUTOR_TYPE || "codex-cli",
   codexCommand: process.env.CODEX_COMMAND || "codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox",
   codexModel: process.env.CODEX_MODEL || "",
-  codexExtraArgs: process.env.CODEX_EXTRA_ARGS || ""
+  codexExtraArgs: process.env.CODEX_EXTRA_ARGS || "",
+  evolution: {
+    enabled: (process.env.EVOLUTION_ENABLED || "true").toLowerCase() === "true",
+    dataDir: process.env.EVOLUTION_DATA_DIR || path.join(process.cwd(), "logs", "evolution"),
+    overridesPath: process.env.EVOLUTION_OVERRIDES_PATH || path.join(process.cwd(), "src", "generated", "evolution-overrides.json"),
+    analyzeDelayMs: Number(process.env.EVOLUTION_ANALYZE_DELAY_MS || 15_000),
+    analyzeIncidentLimit: Number(process.env.EVOLUTION_ANALYZE_INCIDENT_LIMIT || 20)
+  }
 };
 
 function parseJsonObject(value) {

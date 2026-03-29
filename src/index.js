@@ -16,6 +16,9 @@ import { JobQueue } from "./queue/jobQueue.js";
 import { AccessControl } from "./services/accessControl.js";
 import { IntentInterpreter } from "./services/intentInterpreter.js";
 import { ChatResponder } from "./services/chatResponder.js";
+import { MemorySessionStore } from "./store/memorySessionStore.js";
+import { EvolutionService } from "./services/evolutionService.js";
+import { EvolutionOverridesStore } from "./services/evolutionOverridesStore.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -30,6 +33,8 @@ const {
   feishuEvents,
   feishuLongConnection,
   heartbeat,
+  evolution,
+  evolutionOverrides,
   storeKind
 } = runtime;
 
@@ -62,6 +67,15 @@ app.get("/agents", async (_req, res) => {
   res.json({
     agents: await agentStore.list(),
     currentAgentId: config.agentId
+  });
+});
+
+app.get("/evolution/latest", async (_req, res) => {
+  res.json({
+    enabled: config.evolution.enabled,
+    report: await evolution.getLatestReport(),
+    incidents: await evolution.getRecentIncidents(10),
+    overrides: await evolutionOverrides.get()
   });
 });
 
@@ -191,19 +205,34 @@ async function createRuntime() {
   const client = new FeishuClient(config.feishu);
   const agentClient = new AgentClient(config);
   const executor = createExecutor(config);
-  const intentInterpreter = new IntentInterpreter({
+  const sessionStore = new MemorySessionStore();
+  const evolutionOverrides = new EvolutionOverridesStore({
     config,
     logger
   });
+  await evolutionOverrides.ensureReady();
+  const evolution = new EvolutionService({
+    config,
+    logger,
+    evolutionOverrides
+  });
+  await evolution.ensureReady();
+  const intentInterpreter = new IntentInterpreter({
+    config,
+    logger,
+    evolutionOverrides
+  });
   const chatResponder = new ChatResponder({
     config,
-    logger
+    logger,
+    evolutionOverrides
   });
   const queue = new JobQueue({
     executor,
     store: jobStore,
     client,
-    timeoutMs: config.jobTimeoutMs
+    timeoutMs: config.jobTimeoutMs,
+    evolution
   });
   const localJobs = new LocalJobService({
     config,
@@ -228,7 +257,8 @@ async function createRuntime() {
     store: jobStore,
     dispatch,
     intentInterpreter,
-    chatResponder
+    chatResponder,
+    sessionStore
   });
   const feishuLongConnection = new FeishuLongConnectionService({
     config,
@@ -236,6 +266,8 @@ async function createRuntime() {
     dispatch,
     intentInterpreter,
     chatResponder,
+    sessionStore,
+    evolution,
     logger
   });
   const heartbeat = new AgentHeartbeat({
@@ -253,6 +285,8 @@ async function createRuntime() {
     feishuEvents,
     feishuLongConnection,
     heartbeat,
+    evolution,
+    evolutionOverrides,
     storeKind: kind
   };
 }

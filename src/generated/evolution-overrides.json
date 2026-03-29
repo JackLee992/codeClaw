@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "updatedAt": "",
+  "learnedPhrases": {
+    "agents": [],
+    "jobs": [],
+    "chat": [],
+    "followUps": []
+  },
+  "styleDirectives": [],
+  "tuning": {
+    "chatTimeoutMs": 20000
+  }
+}

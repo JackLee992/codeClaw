@@ -5,50 +5,52 @@ import os from "node:os";
 import path from "node:path";
 import { parseCommand } from "./commandParser.js";
 
-const INTENT_TYPES = ["run", "status", "agents", "help", "chat", "ignore"];
+const INTENT_TYPES = ["run", "status", "agents", "jobs", "help", "chat", "ignore"];
 
 export class IntentInterpreter {
-  constructor({ config, logger }) {
+  constructor({ config, logger, evolutionOverrides }) {
     this.config = config;
     this.logger = logger;
+    this.evolutionOverrides = evolutionOverrides;
   }
 
-  async interpret(text) {
+  async interpret(text, session = {}) {
     const fallback = parseCommand(text);
     const normalized = String(text || "").trim();
     if (!normalized) {
       return fallback;
     }
 
-    const heuristic = heuristicIntent(normalized, fallback);
+    const overrides = this.evolutionOverrides ? await this.evolutionOverrides.get() : null;
+    const heuristic = heuristicIntent(normalized, fallback, session, overrides);
     if (heuristic) {
-      return heuristic;
+      return applySessionDefaults(heuristic, session);
     }
 
     try {
-      const interpreted = await this.interpretWithCodex(normalized);
+      const interpreted = await this.interpretWithCodex(normalized, session, overrides);
       if (!interpreted) {
         return fallback;
       }
 
-      return normalizeIntent(interpreted, fallback);
+      return applySessionDefaults(normalizeIntent(interpreted, fallback), session);
     } catch (error) {
       this.logger.warn("Intent interpreter fell back to rule parser.", {
         error: error instanceof Error ? error.message : String(error),
         text: normalized
       });
-      return fallback;
+      return applySessionDefaults(fallback, session);
     }
   }
 
-  async interpretWithCodex(text) {
+  async interpretWithCodex(text, session = {}, overrides = null) {
     const commandLine = this.config.codexCommand;
     if (!commandLine) {
       return null;
     }
 
     const outputFile = path.join(os.tmpdir(), `feishu-codex-intent-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
-    const prompt = buildIntentPrompt(text, this.config.agentId);
+    const prompt = buildIntentPrompt(text, this.config.agentId, session, overrides);
     const extraArgs = [`--output-last-message ${quoteArg(outputFile)}`];
     const fullCommand = `${commandLine} ${extraArgs.join(" ")}`.trim();
     const argv = shellSplit(fullCommand);
@@ -110,12 +112,45 @@ export class IntentInterpreter {
   }
 }
 
-function heuristicIntent(text, fallback) {
+function heuristicIntent(text, fallback, session = {}, overrides = null) {
   const normalized = text.trim();
   const lower = normalized.toLowerCase();
+  const learned = overrides?.learnedPhrases || {};
 
   if (fallback.type === "help" || fallback.type === "agents" || fallback.type === "status") {
     return fallback;
+  }
+
+  if (matchesLearnedPhrase(normalized, learned.agents)) {
+    return { type: "agents" };
+  }
+
+  if (matchesLearnedPhrase(normalized, learned.jobs)) {
+    return { type: "jobs" };
+  }
+
+  if (matchesLearnedPhrase(normalized, learned.chat)) {
+    return { type: "chat" };
+  }
+
+  if (/(几个设备在线|几台设备在线|几个机器在线|几台机器在线|多少设备在线|多少机器在线|多少节点在线|当前在线设备|当前在线机器|当前在线节点|在线的设备|在线的机器|在线的节点)/.test(normalized)) {
+    return { type: "agents" };
+  }
+
+  if (/(任务执行情况|执行情况|哪些任务在跑|哪些任务正在跑|现在有哪些任务|当前有哪些任务|当前任务|任务概览|任务总览|汇报.*任务|总结.*任务)/.test(normalized)) {
+    return { type: "jobs" };
+  }
+
+  if (/(明明有.*任务|有在执行的任务|有任务在跑|怎么没有任务|为什么没有任务)/.test(normalized)) {
+    return { type: "jobs" };
+  }
+
+  if (/(用的什么模型|使用什么模型|当前模型|现在什么模型|哪个模型)/.test(normalized)) {
+    return { type: "chat" };
+  }
+
+  if (/(安装了哪些.*技能|有哪些.*技能|现在安装了哪些.*skill|安装了什么技能|有哪些 codex 技能)/i.test(normalized)) {
+    return { type: "chat" };
   }
 
   if (/^(hi|hello|hey|你好|哈喽|嗨|在吗|在嗎)$/.test(lower) || /^(你好|哈喽|嗨|在吗|在嗎)$/.test(normalized)) {
@@ -127,6 +162,23 @@ function heuristicIntent(text, fallback) {
   }
 
   if (/(天气|天氣|温度|氣溫|下雨|晴天|阴天|颱風|台风)/.test(normalized)) {
+    return { type: "chat" };
+  }
+
+  if (isFollowUpTurn(normalized, learned.followUps)) {
+    if (session.lastIntent === "chat") {
+      return { type: "chat" };
+    }
+    if (session.lastIntent === "run" && /(继续|接着|按刚才|照刚才|沿用|用刚才|改成|改一下|补充|优化|重写|重做|再来一版)/.test(normalized)) {
+      return {
+        type: "run",
+        task: mergeFollowUpTask(normalized, session)
+      };
+    }
+    return { type: "chat" };
+  }
+
+  if (isLikelyGeneralCreationRequest(normalized) && !isLikelyExecutionRequest(normalized)) {
     return { type: "chat" };
   }
 
@@ -142,32 +194,75 @@ function isLikelyGeneralQuestion(text) {
 }
 
 function isLikelyExecutionRequest(text) {
-  return /(帮我|幫我|请帮|請幫|检查|檢查|修改|修复|修復|实现|實現|运行|運行|执行|執行|分析|看看|看下|提交|寫|编写|編寫|生成|整理|搜索|搜尋|打开|打開|仓库|倉庫|repo|agent=|model=|状态|狀態|节点|節點)/i.test(
+  return /(本地|电脑|電腦|机器|機器|节点|節點|agent=|repo=|model=|仓库|倉庫|项目|項目|代码|代碼|代码库|代碼庫|git|commit|pr\b|pull request|分支|branch|目录|目錄|文件|檔案|日志|日誌|终端|終端|shell|命令行|command|运行脚本|跑脚本|启动服务|啟動服務|查看改动|查看改動|最近改动|最近改動|diff|测试|測試|单测|單測|构建|構建|编译|編譯|修 bug|修复 bug|修復 bug|报错|報錯|排查|状态|狀態|任务状态|任務狀態)/i.test(
     text
   );
 }
 
-function buildIntentPrompt(text, currentAgentId) {
+function isLikelyGeneralCreationRequest(text) {
+  return /(写|寫|写一篇|寫一篇|写个|寫個|润色|潤色|改写|改寫|总结|總結|概括|文案|稿子|脚本|腳本|朋友圈|小红书|小紅書|抖音|微博|标题|標題|热点|熱點|方案|提纲|提綱|邮件|郵件|回复|回覆|翻译|翻譯|介绍|介紹|说明|說明)/i.test(
+    text
+  );
+}
+
+function isFollowUpTurn(text, learnedFollowUps = []) {
+  return (
+    /^(继续|接着|然后|那就|按刚才|照刚才|沿用刚才|还是刚才|再来|再写|重写|重新写|改一下|改一版|换一版|再短一点|短一点|口语一点|像人话一点|就按这个|按这个来|就这个|这版不行|上一版不行|你自己重写)/.test(
+      text
+    ) || matchesLearnedPhrase(text, learnedFollowUps)
+  );
+}
+
+function matchesLearnedPhrase(text, phrases = []) {
+  return (Array.isArray(phrases) ? phrases : []).some((phrase) => phrase && text.includes(phrase));
+}
+
+function buildIntentPrompt(text, currentAgentId, session = {}, overrides = null) {
+  const sessionHints = [
+    session.lastIntent ? `Last intent: ${session.lastIntent}` : "",
+    session.lastTask ? `Last task/topic: ${session.lastTask}` : "",
+    session.lastUserText ? `Last user text: ${session.lastUserText}` : "",
+    session.lastAssistantText ? `Last assistant reply: ${session.lastAssistantText}` : "",
+    session.sessionSummary ? `Session summary: ${session.sessionSummary}` : "",
+    overrides?.learnedPhrases?.agents?.length ? `Learned agents phrases: ${overrides.learnedPhrases.agents.join(" | ")}` : "",
+    overrides?.learnedPhrases?.jobs?.length ? `Learned jobs phrases: ${overrides.learnedPhrases.jobs.join(" | ")}` : "",
+    overrides?.learnedPhrases?.chat?.length ? `Learned chat phrases: ${overrides.learnedPhrases.chat.join(" | ")}` : "",
+    overrides?.learnedPhrases?.followUps?.length ? `Learned follow-up phrases: ${overrides.learnedPhrases.followUps.join(" | ")}` : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+
   return [
     "You are the intent router for a Feishu-to-Codex bridge.",
     "Decide what the system should do with the user's latest message.",
     "Return JSON only. No markdown, no explanation.",
     `Current default agent id: ${currentAgentId}`,
-    "Allowed intent types: run, status, agents, help, chat, ignore.",
+    "Allowed intent types: run, status, agents, jobs, help, chat, ignore.",
     "Use type=run only when the user is asking the connected computer/Codex to do work: coding, editing files, reading local repos, checking local changes, running commands, or other executable tasks.",
     "Use type=chat for normal conversation, general questions, greetings, explanations, brainstorming, and questions that should be answered directly in chat without creating a job.",
     "Use type=help for asking how to use the bot.",
     "Use type=agents for asking which machines/nodes are online.",
     "Use type=status for asking the status of a job and include jobId.",
+    "Use type=jobs for asking about currently running, queued, or recent tasks in general without a specific job id.",
     "Questions like weather, definitions, introductions, capability questions, or casual talk should usually be chat, not run.",
     "If the user includes parameters like agent=..., repo=..., model=..., extract them into the corresponding fields.",
     "For type=run, include task as clean natural-language task text without the parameter tokens.",
     "For type=chat, replyText can be empty because another responder may answer later.",
+    "If the user is obviously following up on the immediately previous conversation, preserve that continuity instead of treating it as a brand new unrelated request.",
     "When unsure between run and chat, prefer chat unless the user clearly wants you to operate on the machine or repository.",
     'Return a JSON object with keys: {"type":"","task":"","repo":"","agentId":"","model":"","jobId":"","replyText":""}.',
+    sessionHints || "Session hints: none",
     "Latest user message:",
     text
   ].join("\n");
+}
+
+function mergeFollowUpTask(text, session) {
+  const base = String(session.lastTask || session.lastUserText || "").trim();
+  if (!base) {
+    return text;
+  }
+  return `${base}\n\n补充要求：${text}`.trim();
 }
 
 function normalizeIntent(intent, fallback) {
@@ -194,13 +289,26 @@ function normalizeIntent(intent, fallback) {
 
   if (type === "chat") {
     normalized.replyText = String(intent?.replyText || "").trim();
-    if (!normalized.replyText) {
-      return fallback;
-    }
     return normalized;
   }
 
   return normalized;
+}
+
+function applySessionDefaults(intent, session) {
+  if (intent?.type !== "run") {
+    return intent;
+  }
+
+  return {
+    ...intent,
+    options: {
+      ...(intent.options || {}),
+      agent: String(intent.options?.agent || session.lastAgentId || "").trim(),
+      repo: String(intent.options?.repo || session.lastRepo || "").trim(),
+      model: String(intent.options?.model || session.lastModel || "").trim()
+    }
+  };
 }
 
 function extractJson(value) {

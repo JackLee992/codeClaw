@@ -3,11 +3,12 @@ import { formatCompleted, formatFailed, formatStarted } from "../services/messag
 import { buildJobCard } from "../services/cardRenderer.js";
 
 export class JobQueue {
-  constructor({ executor, store, client, timeoutMs }) {
+  constructor({ executor, store, client, timeoutMs, evolution }) {
     this.executor = executor;
     this.store = store;
     this.client = client;
     this.timeoutMs = timeoutMs;
+    this.evolution = evolution;
     this.items = [];
     this.running = false;
   }
@@ -88,6 +89,18 @@ export class JobQueue {
       });
 
       logger.error("Job failed.", { jobId: job.id, error: message });
+      await this.evolution?.recordIncident({
+        type: "job_failure",
+        summary: `任务失败: ${job.task || job.id}`,
+        userText: job.task || "",
+        jobId: job.id,
+        sessionId: job.messageContext?.chatId || job.messageContext?.openId || "",
+        meta: {
+          error: message,
+          repoPath: job.repoPath,
+          agentId: job.metadata?.agentId || ""
+        }
+      });
       await this.safeReply(failed, {
         text: formatFailed(failed),
         card: buildJobCard(failed, "failed")
@@ -102,6 +115,16 @@ export class JobQueue {
       logger.error("Failed to reply to Feishu.", {
         jobId: job.id,
         error: error instanceof Error ? error.message : String(error)
+      });
+      await this.evolution?.recordIncident({
+        type: "reply_failure",
+        summary: `任务回复失败: ${job.task || job.id}`,
+        userText: job.task || "",
+        jobId: job.id,
+        sessionId: job.messageContext?.chatId || job.messageContext?.openId || "",
+        meta: {
+          error: error instanceof Error ? error.message : String(error)
+        }
       });
     }
   }

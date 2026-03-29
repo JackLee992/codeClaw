@@ -1,14 +1,16 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
-import { formatAgents, formatHelp, formatStatus } from "./messageFormatter.js";
+import { formatAgents, formatHelp, formatJobsOverview, formatStatus } from "./messageFormatter.js";
 import { buildAgentsCard, buildJobCard } from "./cardRenderer.js";
 
 export class FeishuLongConnectionService {
-  constructor({ config, client, dispatch, intentInterpreter, chatResponder, logger }) {
+  constructor({ config, client, dispatch, intentInterpreter, chatResponder, sessionStore, evolution, logger }) {
     this.config = config;
     this.client = client;
     this.dispatch = dispatch;
     this.intentInterpreter = intentInterpreter;
     this.chatResponder = chatResponder;
+    this.sessionStore = sessionStore;
+    this.evolution = evolution;
     this.logger = logger;
     this.wsClient = null;
   }
@@ -124,6 +126,17 @@ export class FeishuLongConnectionService {
   }
 
   async handleMessage(event) {
+    const senderType = String(event.sender?.sender_type || "").toLowerCase();
+    const senderAppId = String(event.sender?.sender_id?.app_id || "");
+    if (senderType === "app" || (senderAppId && senderAppId === this.config.feishu.appId)) {
+      this.logger.info("Ignore self-sent Feishu message.", {
+        messageId: event.message?.message_id || "",
+        senderType,
+        senderAppId
+      });
+      return;
+    }
+
     const messageId = event.message?.message_id || "";
     const text = extractMessageText(event.message?.content);
     this.logger.info("Feishu message parsed.", {
@@ -138,15 +151,32 @@ export class FeishuLongConnectionService {
       replyMode: "app"
     };
     const userId = event.sender?.sender_id?.open_id || "";
+    const sessionId = messageContext.chatId || messageContext.openId || userId || "default";
+    const session = await this.sessionStore.get(sessionId);
     const reactionId = await this.client.addMessageReaction(messageId, "THINKING");
 
+    if (isDissatisfactionMessage(text)) {
+      await this.evolution?.recordIncident({
+        type: "user_dissatisfaction",
+        summary: text,
+        userText: text,
+        sessionId,
+        meta: {
+          lastIntent: session.lastIntent || "",
+          lastTask: session.lastTask || "",
+          lastAssistantText: session.lastAssistantText || ""
+        }
+      });
+    }
+
     try {
-      const command = await this.intentInterpreter.interpret(text);
+      const command = await this.intentInterpreter.interpret(text, session);
       if (command.type === "ignore") {
         return;
       }
 
       if (command.type === "help") {
+        await this.sessionStore.update(sessionId, { lastIntent: "help" });
         this.logger.info("Handling Feishu help command.", { messageContext });
         await this.client.replyText(messageContext, formatHelp());
         this.logger.info("Handled Feishu help command.", { messageContext });
@@ -154,6 +184,7 @@ export class FeishuLongConnectionService {
       }
 
       if (command.type === "agents") {
+        await this.sessionStore.update(sessionId, { lastIntent: "agents" });
         this.logger.info("Handling Feishu agents command.", { messageContext });
         const agents = await this.dispatch.listAgents();
         await this.client.replyCard(
@@ -166,6 +197,10 @@ export class FeishuLongConnectionService {
       }
 
       if (command.type === "status") {
+        await this.sessionStore.update(sessionId, {
+          lastIntent: "status",
+          lastJobId: command.jobId || session.lastJobId || ""
+        });
         this.logger.info("Handling Feishu status command.", { messageContext, jobId: command.jobId || "" });
         const job = command.jobId ? await this.dispatch.lookupStatus(command.jobId) : null;
         if (job) {
@@ -177,9 +212,43 @@ export class FeishuLongConnectionService {
         return;
       }
 
+      if (command.type === "jobs") {
+        await this.sessionStore.update(sessionId, { lastIntent: "jobs" });
+        this.logger.info("Handling Feishu jobs overview.", { messageContext });
+        const jobs = await this.dispatch.listJobs(10);
+        await this.client.replyText(messageContext, formatJobsOverview(jobs, this.config.agentId));
+        this.logger.info("Handled Feishu jobs overview.", { messageContext });
+        return;
+      }
+
       if (command.type === "chat") {
+        await this.sessionStore.update(sessionId, { lastIntent: "chat" });
         this.logger.info("Handling Feishu chat reply.", { messageContext });
-        const replyText = command.replyText || (await this.chatResponder.reply(text));
+        let replyText = command.replyText || "";
+        try {
+          replyText = replyText || (await this.chatResponder.reply(text, session));
+        } catch (error) {
+          this.logger.warn("Feishu chat reply timed out or failed; using fallback reply.", {
+            error: error instanceof Error ? error.message : String(error),
+            messageContext
+          });
+          await this.evolution?.recordIncident({
+            type: "chat_timeout",
+            summary: text,
+            userText: text,
+            sessionId,
+            meta: {
+              error: error instanceof Error ? error.message : String(error),
+              lastIntent: session.lastIntent || "",
+              lastTask: session.lastTask || ""
+            }
+          });
+          replyText = "我看到了，这条我刚才处理卡住了。你可以直接再发一次，或者我现在也可以先按我理解的方向继续接着做。";
+        }
+        await this.sessionStore.rememberChat(sessionId, {
+          userText: text,
+          assistantText: replyText
+        });
         await this.client.replyText(messageContext, replyText);
         this.logger.info("Handled Feishu chat reply.", { messageContext });
         return;
@@ -203,6 +272,15 @@ export class FeishuLongConnectionService {
         userId
       });
 
+      await this.sessionStore.rememberRun(sessionId, {
+        agentId: dispatchResult.job?.metadata?.agentId || command.options.agent || this.config.agentId,
+        repo: command.options.repo || session.lastRepo || "",
+        model: command.options.model || session.lastModel || "",
+        task: command.task,
+        jobId: dispatchResult.job?.id || "",
+        assistantText: dispatchResult.message || ""
+      });
+
       this.logger.info("Handling Feishu run command reply.", {
         messageContext,
         jobMessage: dispatchResult.message
@@ -213,6 +291,12 @@ export class FeishuLongConnectionService {
       await this.client.removeMessageReaction(messageId, reactionId);
     }
   }
+}
+
+function isDissatisfactionMessage(text) {
+  return /(没回复|不回复|对不上|答非所问|乱回|太AI|太 ai|不像人话|不对|不行|有问题|听不懂|看不懂|抓的不对|你没懂|你理解错|你又|还是不对)/i.test(
+    String(text || "")
+  );
 }
 
 function extractMessageText(content) {

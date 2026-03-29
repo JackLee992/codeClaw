@@ -13,6 +13,8 @@ It also borrows a few interaction details that make OpenClaw feel good in chat:
 - add a `THINKING` reaction to the original message while work is in progress
 - prefer natural-language interaction over slash-command syntax
 - show process-style updates instead of only “job created / job done”
+- keep session context so follow-up messages like “rewrite it” or “shorter” are easier to carry forward
+- learn from repeated incidents and update low-risk strategy overrides automatically
 
 ## What It Does
 
@@ -24,6 +26,8 @@ It also borrows a few interaction details that make OpenClaw feel good in chat:
 - Tracks machine presence through heartbeats
 - Supports optional Redis persistence for jobs and agent presence
 - Supports ACL restrictions for users, machines, and repositories
+- Keeps lightweight per-chat session memory for follow-up turns
+- Can auto-record incidents and evolve routing/style overrides
 - Returns text and card updates back to Feishu
 
 ## High-Level Flow
@@ -119,6 +123,7 @@ ALLOWED_REPO_ROOTS=C:/work
 
 EXECUTOR_TYPE=codex-cli
 CODEX_COMMAND=codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox
+EVOLUTION_ENABLED=true
 ```
 
 ## Chat Experience
@@ -142,6 +147,7 @@ Behavior:
 - help/capability questions become a direct reply
 - machine and status queries are routed to the relevant system actions
 - execution requests become real Codex jobs
+- follow-up turns such as “重写一版”, “再短一点”, or “按刚才那个来” try to continue the current session instead of starting cold
 
 ## Process Feedback
 
@@ -201,6 +207,45 @@ REDIS_KEY_PREFIX=codeclaw
 ```
 
 Without Redis, the bridge falls back to in-memory storage.
+
+## Auto Evolution
+
+`codeClaw` now includes a low-risk self-evolution loop.
+
+What it does:
+
+- records incidents such as chat timeout, reply failure, job failure, and clear user dissatisfaction
+- keeps a lightweight report of recent failure patterns
+- updates a generated overrides file for low-risk behavior changes such as:
+  - learned routing phrases
+  - learned follow-up phrases
+  - adaptive style directives
+  - chat timeout tuning
+
+Important design choice:
+
+- it does **not** directly rewrite core source files by default
+- it **does** rewrite a generated strategy file that the runtime reads immediately
+
+Generated strategy file:
+
+`src/generated/evolution-overrides.json`
+
+You can inspect the current evolution state from the local service:
+
+```text
+GET /evolution/latest
+```
+
+Relevant env vars:
+
+```text
+EVOLUTION_ENABLED=true
+EVOLUTION_DATA_DIR=
+EVOLUTION_OVERRIDES_PATH=
+EVOLUTION_ANALYZE_DELAY_MS=15000
+EVOLUTION_ANALYZE_INCIDENT_LIMIT=20
+```
 
 ## Access Control
 

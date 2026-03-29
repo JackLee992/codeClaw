@@ -76,6 +76,24 @@ export function formatAgents(agents, currentAgentId) {
   ].join("\n");
 }
 
+export function formatJobsOverview(jobs, currentAgentId) {
+  if (!jobs.length) {
+    return "现在没有正在排队或执行中的任务。";
+  }
+
+  const active = jobs.filter((job) => job.status === "queued" || job.status === "running");
+  const recent = active.length ? active : jobs.slice(0, 5);
+
+  return [
+    active.length ? "当前在跑的任务：" : "最近的任务：",
+    ...recent.map((job) => {
+      const agent = job.metadata?.agentId || currentAgentId;
+      const task = truncateText(job.task || "", 80);
+      return `- ${job.status} | ${agent} | ${job.id} | ${task}`;
+    })
+  ].join("\n");
+}
+
 export function truncateText(value, maxLength) {
   if (!value || value.length <= maxLength) {
     return value;

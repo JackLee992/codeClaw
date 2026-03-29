@@ -1,5 +1,5 @@
 import { resolveRepoPath } from "./repoResolver.js";
-import { formatQueued, formatStatus } from "./messageFormatter.js";
+import { formatJobsOverview, formatQueued, formatStatus } from "./messageFormatter.js";
 
 export class DispatchService {
   constructor({ config, localJobs, agentStore, agentClient, accessControl }) {
@@ -98,6 +98,16 @@ export class DispatchService {
 
   async listAgents() {
     return this.agentStore.list();
+  }
+
+  async listJobs(limit = 10) {
+    const jobs = await this.localJobs.store.list(limit);
+    return jobs;
+  }
+
+  async summarizeJobs(limit = 10) {
+    const jobs = await this.listJobs(limit);
+    return formatJobsOverview(jobs, this.config.agentId);
   }
 }
 
