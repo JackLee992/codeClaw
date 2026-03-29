@@ -1,0 +1,4 @@
+interface:
+  display_name: "codeClaw"
+  short_description: "Feishu long-connection Codex bridge."
+  default_prompt: "Use codeClaw to deploy, configure, or troubleshoot a Feishu long-connection bridge for Codex with natural chat, reactions, progress feedback, and multi-machine dispatch."
