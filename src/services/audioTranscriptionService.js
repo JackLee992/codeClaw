@@ -24,11 +24,12 @@ export class AudioTranscriptionService {
     }
 
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codeclaw-audio-"));
-    const downloadedPath = path.join(tempDir, "feishu-audio.bin");
+    const downloadedPath = path.join(tempDir, "feishu-audio.ogg");
     const wavPath = path.join(tempDir, "feishu-audio.wav");
 
     try {
-      await this.client.downloadMessageResource(messageId, fileKey, downloadedPath, "audio");
+      // Feishu voice messages are downloaded through the generic file resource type.
+      await this.client.downloadMessageResource(messageId, fileKey, downloadedPath, "file");
       await runCommand("ffmpeg", ["-y", "-i", downloadedPath, "-ac", "1", "-ar", "16000", wavPath], this.logger);
       const result = await runCommand(
         this.config.audio.pythonCommand,
@@ -41,7 +42,11 @@ export class AudioTranscriptionService {
           "--language",
           language
         ],
-        this.logger
+        this.logger,
+        {
+          PYTHONUTF8: "1",
+          PYTHONIOENCODING: "utf-8"
+        }
       );
 
       const payload = safeParseJson(result.stdout);
@@ -77,11 +82,15 @@ function safeParseJson(value) {
   }
 }
 
-function runCommand(command, args, logger) {
+function runCommand(command, args, logger, envOverrides = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        ...envOverrides
+      }
     });
 
     let stdout = "";

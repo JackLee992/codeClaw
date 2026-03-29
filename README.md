@@ -176,9 +176,13 @@ AUDIO_WHISPER_MODEL_PATH=C:/Users/you/.cache/huggingface/hub/models--openai--whi
 Flow:
 
 - download Feishu audio via the message resource API
+- use message resource type `file` for Feishu voice messages
 - normalize it to mono `16k wav`
 - run `scripts/transcribe_audio.py`
 - feed the transcript back into the same intent and chat logic
+
+On Windows, force Python stdout to UTF-8 during transcription so Chinese
+transcripts do not come back garbled.
 
 If local transcription fails, the bot sends a clear fallback reply instead of silently doing nothing.
 
